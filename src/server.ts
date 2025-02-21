@@ -34,7 +34,7 @@ app.post(
     const apiKey = req.headers.authorization?.split(" ")[1]
 
     const stream = connect.stream({
-      url: `wss://${process.env.SERVER_DOMAIN_DEV}/voice-agent`,
+      url: `wss://${process.env.SERVER_DOMAIN}/voice-agent`,
     })
 
     stream.parameter({
