@@ -2,11 +2,19 @@
 import WebSocket from "ws"
 import { createClient, AgentEvents } from "@deepgram/sdk"
 import moment from "moment"
-import { getAvailableTimeSlots } from "../utils/tools"
+import {
+  bookTimeSlot,
+  cancelAppointment,
+  getAvailableTimeSlots,
+  getPatientRecord,
+} from "../utils/tools"
+import dotenv from "dotenv"
+
+dotenv.config()
 
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY)
 
-export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
+export function handleVoiceAgent(ws: WebSocket, lang: string) {
   console.log("Setting up Deepgram Voice Agent")
   const connection = deepgram.agent()
   let currentStreamSid: string | null = null
@@ -120,11 +128,8 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
         // @ts-ignore (they do support groq but the current SDK doesn't lol)
         think: {
           provider: {
-            // type: "groq",
             type: "open_ai",
           },
-          // max_tokens: 200,
-          // model: "llama3-70b-8192",
           model: "gpt-4o-mini",
           instructions: `Your name is Ava. You are a helpful AI Agent that handles appointment scheduling for Axon AI medical clinic. You can schedule, cancel and reschedule patient appointments. You can also provide information about the clinic, such as hours of operation, location, and services. 
           
@@ -133,13 +138,30 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
 
           2. If the patient wants to cancel an appointment, you should go ahead and cancel the given appointment on the date they are requesting. Then you should prompt them to go ahead and schedule a new appointment. If they are not able to at this time, then just tell them to call back when they are ready.
 
-          3. If the patient wants to schedule or reschedule an appointment, you should first fetch the available appointments, then present a few options to the patient and ask them to choose one (only list off a max of 4-5). Once they have chosen an appointment, you should book the appointment for them.
+          3. If the patient wants to schedule or reschedule an appointment, you should first fetch the available appointments, then ask the patient when they are free or looking to reschedule for. Once they have chosen an appointment, you should book the appointment for them.
+
+          ### Additional Details
+
+          When listing times, always say them as 10 o clock AM or 2 o clock PM. For instance, 10:00 AM should be said as 10 o clock AM. 2:00 PM should be said as 2 o clock PM. Dates should be read as for instance April fifth twenty twenty five. You should narrow down what appointment dates the patient wants to a narrow range (2-3 days). Do not list off a long range of times just have a natural dialog with the patient about when they are looking to schedule the appointment and suggest dates if they are unsure.
+
+          HANG UP ONLY WHEN THE USER SAYS GOODBYE OR INDICATES THEY ARE DONE. DO NOT HANG UP IF THE USER IS JUST SAYING THANKS BUT CONTINUING THE CONVERSATION.
             `,
           functions: [
             {
               name: "hang_up",
-              description:
-                "hang up the phone call when you the caller is done with questions, or after you have called the book_time_slot function and there are no further questions. Do not hang up abruptly on the caller.",
+              description: `End the conversation and close the connection. Call this function when:
+        - User says goodbye, thank you, etc.
+        - User indicates they're done ("that's all I need", "I'm all set", etc.)
+        - User wants to end the conversation
+        
+        Examples of triggers:
+        - "Thank you, bye!"
+        - "That's all I needed, thanks"
+        - "Have a good day"
+        - "Goodbye"
+        - "I'm done"
+        
+        Do not call this function if the user is just saying thanks but continuing the conversation.`,
               parameters: {
                 type: "object",
                 properties: {
@@ -150,6 +172,40 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
                 },
                 // @ts-ignore
                 required: ["shouldHangUp"],
+              },
+            },
+            {
+              name: "get_patient_record",
+              description: `Get the patient record (including appointments) from a patient name. date of birth, and last 4 of social security number. If the patient is not found, you should verify the details you received with the patient.
+              
+              For instance, if the patient's name is "John Doe", you should clarify the spelling by saying "Is the spelling J-O-H-N D-O-E?"
+              
+              If the patient record is found you should use the returned appoinments array to get the appointment ids for the cancelling function call.
+             `,
+              parameters: {
+                type: "object",
+                properties: {
+                  firstName: {
+                    type: "string",
+                    description: "The patient's first name",
+                  },
+                  lastName: {
+                    type: "string",
+                    description: "The patient's last name",
+                  },
+                  dob: {
+                    type: "string",
+                    description:
+                      "The patient's date of birth. Formatted as YYYY-MM-DD",
+                  },
+                  ssn: {
+                    type: "number",
+                    description:
+                      "The last 4 digits of the patient's social security number (optional)",
+                  },
+                },
+                // @ts-ignore
+                required: ["firstName", "lastName", "dob"],
               },
             },
             {
@@ -169,26 +225,81 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
                   start: {
                     type: "string",
                     description:
-                      "The start date for the time slots to search for. (in YYYY-MM-DD format)",
+                      "The start date for the time slots to search for. (in ISO 8601 format) CST",
                   },
                   end: {
                     type: "string",
                     description:
-                      "The end date for the time slots to search for. (in YYYY-MM-DD format)",
+                      "The end date for the time slots to search for. (in ISO 8601 format) CST",
+                  },
+                  patientId: {
+                    type: "string",
+                    description:
+                      "The patient's ID. This is returned from the get_patient_record function",
                   },
                 },
                 // @ts-ignore
-                required: ["start", "end"],
+                required: ["start", "end", "patientId"],
               },
             },
             {
               name: "book_time_slot",
-              description: ``,
+              description: `Book a time slot for a patient. You should call this function after the patient has chosen an available time slot and you have presented them to them. If the booking is successful, you should provide a confirmation message to the patient.`,
               parameters: {
                 type: "object",
-                properties: {},
+                properties: {
+                  patientId: {
+                    type: "string",
+                    description:
+                      "The patient's ID. This is returned from the get_patient_record function",
+                  },
+                  start: {
+                    type: "string",
+                    description:
+                      "The start date and time for the appointment. (in ISO 8601 format) CST",
+                  },
+                  end: {
+                    type: "string",
+                    description:
+                      "The end date and time for the appointment. (in ISO 8601 format) CST",
+                  },
+                  date: {
+                    type: "string",
+                    description:
+                      "The date of the appointment. (in YYYY-MM-DD format)",
+                  },
+                  notes: {
+                    type: "string",
+                    description: "Any notes or comments for the appointment",
+                  },
+                },
                 // @ts-ignore
-                required: [],
+                required: ["patientId", "start", "end", "date"],
+              },
+            },
+            {
+              name: "cancel_appointment",
+              description: `Book a time slot for a patient. You should call this function after the patient has chosen an available time slot and you have presented them to them. If the booking is successful, you should provide a confirmation message to the patient.`,
+              parameters: {
+                type: "object",
+                properties: {
+                  appointmentId: {
+                    type: "string",
+                    description:
+                      "The appointment's ID. This is returned from the get_patient_record function",
+                  },
+                  patientId: {
+                    type: "string",
+                    description:
+                      "The patient's ID. This is returned from the get_patient_record function",
+                  },
+                  cancellationReason: {
+                    type: "string",
+                    description: "The reason for cancelling the appointment",
+                  },
+                },
+                // @ts-ignore
+                required: ["appointmentId", "patientId", "cancellationReason"],
               },
             },
           ],
@@ -307,6 +418,36 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
       }, 5500)
     }
 
+    if (message.function_name === "get_patient_record") {
+      console.log("Getting patient record")
+      isAgentResponding = true
+      clearTimers()
+      getPatientRecord({
+        firstName: message.input.firstName,
+        lastName: message.input.lastName,
+        dateOfBirth: message.input.dob,
+        last4SSN: message.input.ssn,
+      })
+        .then((data) => {
+          console.log("Patient record:", data)
+          connection.functionCallResponse({
+            function_call_id: message.function_call_id,
+            output: JSON.stringify(data),
+          })
+        })
+        .catch((error) => {
+          console.error("Error getting patient record:", error)
+          isAgentResponding = false
+          connection.injectAgentMessage(
+            `I'm sorry, I'm having trouble finding the patient record right now.`
+          )
+          connection.functionCallResponse({
+            function_call_id: message.function_call_id,
+            output: JSON.stringify({ error: error.message }),
+          })
+        })
+    }
+
     if (message.function_name === "get_available_time_slots") {
       console.log("Getting available time slots")
       isAgentResponding = true
@@ -317,7 +458,7 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
       getAvailableTimeSlots({
         startTime: message.input.start,
         endTime: message.input.end,
-        duration: 30,
+        patientId: message.input.patientId,
       })
         .then((data) => {
           console.log("Available time slots:", data)
@@ -332,19 +473,23 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
           connection.injectAgentMessage(
             `I'm sorry, I'm having trouble finding available time slots right now.`
           )
+          connection.functionCallResponse({
+            function_call_id: message.function_call_id,
+            output: JSON.stringify({ error: error.message }),
+          })
         })
     }
     if (message.function_name === "book_time_slot") {
       console.log("Booking time slot")
       isAgentResponding = true
       clearTimers()
-      bookTimeSlot(
-        message.input.start,
-        message.input.name,
-        message.input.phoneNumber,
-        message.input.email,
-        message.input.notes
-      )
+      bookTimeSlot({
+        patientId: message.input.patientId,
+        startTime: message.input.start,
+        endTime: message.input.end,
+        date: message.input.date,
+        notes: message.input.notes,
+      })
         .then((data) => {
           console.log("Booking successful:", data)
           connection.functionCallResponse({
@@ -357,6 +502,31 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
           isAgentResponding = false
           connection.injectAgentMessage(
             `I'm sorry, I'm having trouble booking the time slot right now.`
+          )
+        })
+    }
+    if (message.function_name === "cancel_appointment") {
+      console.log("Cancelling appointment")
+      isAgentResponding = true
+      clearTimers()
+      connection.injectAgentMessage(`Let me cancel the appointment for you.`)
+      cancelAppointment({
+        appointmentId: message.input.appointmentId,
+        patientId: message.input.patientId,
+        cancellationReason: message.input.cancellationReason,
+      })
+        .then((data) => {
+          console.log("Appointment cancelled:", data)
+          connection.functionCallResponse({
+            function_call_id: message.function_call_id,
+            output: JSON.stringify({ message: "Appointment cancelled" }),
+          })
+        })
+        .catch((error) => {
+          console.error("Error cancelling appointment:", error)
+          isAgentResponding = false
+          connection.injectAgentMessage(
+            `I'm sorry, I'm having trouble cancelling the appointment right now.`
           )
         })
     }
