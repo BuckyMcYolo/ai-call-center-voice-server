@@ -2,6 +2,7 @@
 import WebSocket from "ws"
 import { createClient, AgentEvents } from "@deepgram/sdk"
 import moment from "moment"
+import { getAvailableTimeSlots } from "../utils/tools"
 
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY)
 
@@ -125,16 +126,17 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
           // max_tokens: 200,
           // model: "llama3-70b-8192",
           model: "gpt-4o-mini",
-          instructions: `Your name is Ava. You are a helpful AI that handle appointment scheduling for acme inc.
-            
-          Product information is as follows:
+          instructions: `Your name is Ava. You are a helpful AI Agent that handles appointment scheduling for Axon AI medical clinic. You can schedule, cancel and reschedule patient appointments. You can also provide information about the clinic, such as hours of operation, location, and services. 
+          
+          ## Instructions
 
+          Before you make any changes to the schedule, you should verify the patient's identity by asking for their name, date of birth, and last 4 of their social. You should also verify the appointment details, such as the date, and time for the appointment. If the patient wants to cancel or reschedule an appointment, you should ask for the new date and time that works for them. If they call to cancel, you should prompt them to go ahead and schedule a new appointment, if they are not able to at this time, then just tell them to call back when they are ready.
             `,
           functions: [
             {
               name: "hang_up",
               description:
-                "hang up the phone call when you the user is done with questions, or after you have called the book_time_slot function and there are no further questions. Do niot hang up abruptly on the user.",
+                "hang up the phone call when you the caller is done with questions, or after you have called the book_time_slot function and there are no further questions. Do not hang up abruptly on the caller.",
               parameters: {
                 type: "object",
                 properties: {
@@ -150,7 +152,7 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
             {
               name: "get_available_time_slots",
               description:
-                "Get the available time slots for a given date range. You should call this function first when the user asks to schedule a demo. After you get the available time slots, you should present a few options to the user and ask them to choose one." +
+                "Get the available time slots for a given date range. You should call this function first when the caller asks to schedule an appointment. After you get the available time slots, you should present a few options to the caller and ask them to choose one." +
                 `the current date is ${moment()
                   .utcOffset("America/Chicago")
                   .format(
@@ -196,7 +198,7 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
             role: "assistant",
             // type: "assistant",
             content:
-              "Hello! My name is Ava. I'm an AI voice assistant for Axon AI. I can answer any questions you may have about any products and I can even book a demo for you if you would like. How can I assist you today?",
+              "Hello! Thanks for calling Axon AI medical clinic. I'm Ava, your virtual assistant. How can I help you today?",
           },
         ],
         replay: true,
@@ -309,7 +311,11 @@ export function handleDeepgramVoiceAgent(ws: WebSocket, lang: string) {
       connection.injectAgentMessage(
         `I can help you with that. Let me check the available time slots for you.`
       )
-      getAvailableTimeSlots(message.input.start, message.input.end)
+      getAvailableTimeSlots({
+        startTime: message.input.start,
+        endTime: message.input.end,
+        duration: 30,
+      })
         .then((data) => {
           console.log("Available time slots:", data)
           connection.functionCallResponse({
